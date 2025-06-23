@@ -1,0 +1,292 @@
+# CorroCLI
+
+An Elixir library for interacting with [Corrosion](https://github.com/superfly/corrosion) database CLI commands.
+
+CorroCLI provides a comprehensive interface for executing corrosion commands, parsing their concatenated JSON output, and handling uhlc NTP64 timestamps used by Corrosion.
+
+## Features
+
+- **Sync & Async CLI Execution**: Run corrosion commands synchronously or asynchronously
+- **Robust JSON Parsing**: Handle single JSON objects, arrays, and concatenated JSON output
+- **Timestamp Utilities**: Convert between uhlc NTP64 format and Elixir DateTime
+- **Flexible Configuration**: Multiple configuration sources with validation
+- **Comprehensive Error Handling**: Detailed error reporting and graceful degradation
+
+## Installation
+
+Add `corro_cli` to your list of dependencies in `mix.exs`:
+
+```elixir
+def deps do
+  [
+    {:corro_cli, "~> 0.1.0"}
+  ]
+end
+```
+
+## Quick Start
+
+```elixir
+# Configure the library
+config :corro_cli,
+  binary_path: "/usr/local/bin/corrosion",
+  config_path: "/etc/corrosion/config.toml"
+
+# Get cluster members
+{:ok, output} = CorroCLI.cluster_members()
+{:ok, members} = CorroCLI.Parser.parse_cluster_members(output)
+
+# Run async commands
+task = CorroCLI.cluster_info_async()
+{:ok, info} = Task.await(task)
+
+# Parse timestamps
+timestamp = 7517054269677675168
+formatted = CorroCLI.TimeUtils.format_corrosion_timestamp(timestamp)
+# => "2025-06-17 22:49:43 UTC"
+```
+
+## Configuration
+
+CorroCLI supports multiple configuration sources, resolved in priority order:
+
+### 1. Function Options (Highest Priority)
+
+```elixir
+CorroCLI.cluster_members(
+  binary_path: "/custom/path/to/corrosion",
+  config_path: "/custom/config.toml",
+  timeout: 10_000
+)
+```
+
+### 2. Application Configuration
+
+```elixir
+config :corro_cli,
+  binary_path: "/usr/local/bin/corrosion",
+  config_path: "/etc/corrosion/config.toml",
+  timeout: 5_000
+```
+
+### 3. Environment Variables
+
+```bash
+export CORROSION_BINARY_PATH="/usr/local/bin/corrosion"
+export CORROSION_CONFIG_PATH="/etc/corrosion/config.toml"
+export CORROSION_TIMEOUT="5000"
+```
+
+### 4. Auto-Discovery (Lowest Priority)
+
+CorroCLI will attempt to find the corrosion binary in common locations:
+- `/usr/local/bin/corrosion`
+- `/usr/bin/corrosion`
+- `./corrosion`
+- `./corrosion/corrosion-mac` (for development)
+
+## API Reference
+
+### Core Commands
+
+```elixir
+# Synchronous commands
+{:ok, output} = CorroCLI.cluster_members()
+{:ok, output} = CorroCLI.cluster_info()
+{:ok, output} = CorroCLI.cluster_status()
+
+# Asynchronous commands
+task = CorroCLI.cluster_members_async()
+{:ok, output} = Task.await(task, 10_000)
+
+# Custom commands
+{:ok, output} = CorroCLI.run_command(["query", "SELECT * FROM foo"])
+```
+
+### JSON Parsing
+
+```elixir
+# Parse cluster members with enhancements
+{:ok, members} = CorroCLI.Parser.parse_cluster_members(output)
+
+# Parse any concatenated JSON output
+{:ok, objects} = CorroCLI.Parser.parse_json_output(json_string)
+
+# Parse with custom enhancer function
+enhancer = fn obj -> Map.put(obj, "processed_at", DateTime.utc_now()) end
+{:ok, objects} = CorroCLI.Parser.parse_json_output(json_string, enhancer)
+
+# Extract region from node ID
+region = CorroCLI.Parser.extract_region_from_node_id("ams-machine123")
+# => "ams"
+```
+
+### Timestamp Utilities
+
+```elixir
+# Format Corrosion timestamps
+formatted = CorroCLI.TimeUtils.format_corrosion_timestamp(timestamp)
+# => "2025-06-17 22:49:43 UTC"
+
+# Parse to DateTime
+{:ok, datetime} = CorroCLI.TimeUtils.parse_corrosion_timestamp(timestamp)
+
+# Check if timestamp is recent
+CorroCLI.TimeUtils.recent?(timestamp, 300)  # within 5 minutes
+# => true
+
+# Convert DateTime to Corrosion format
+timestamp = CorroCLI.TimeUtils.to_corrosion_timestamp(datetime)
+
+# Get current time as Corrosion timestamp
+now = CorroCLI.TimeUtils.now_as_corrosion_timestamp()
+```
+
+### Configuration Management
+
+```elixir
+# Get configuration
+{:ok, binary_path} = CorroCLI.Config.get_binary_path()
+{:ok, config_path} = CorroCLI.Config.get_config_path()
+timeout = CorroCLI.Config.get_timeout()
+
+# Validate configuration
+:ok = CorroCLI.Config.validate()
+# or
+{:error, ["Binary not found: /path/to/binary"]} = CorroCLI.Config.validate()
+
+# Discover binary in common locations
+{:ok, path} = CorroCLI.Config.discover_binary()
+```
+
+## Output Format
+
+Corrosion CLI commands output concatenated JSON objects, which CorroCLI handles automatically:
+
+```json
+{"id":"abc123","state":{"addr":"127.0.0.1:8787"}}
+{"id":"def456","state":{"addr":"127.0.0.1:8788"}}
+```
+
+The parser handles:
+- **Single JSON objects**: `{"key": "value"}`
+- **JSON arrays**: `[{"id": "1"}, {"id": "2"}]`
+- **Concatenated objects**: Multiple JSON objects separated by whitespace
+
+## Timestamp Format
+
+Corrosion uses the [uhlc](https://github.com/Mubelotix/uhlc) library's NTP64 format:
+
+- **64-bit fixed-point number**
+- **Upper 32 bits**: Seconds since Unix epoch (January 1, 1970)
+- **Lower 32 bits**: Fractional seconds (1 unit = 1/2^32 seconds)
+
+Despite the "NTP64" name, uhlc uses Unix epoch, not NTP epoch.
+
+## Error Handling
+
+CorroCLI provides detailed error information:
+
+```elixir
+case CorroCLI.cluster_members() do
+  {:ok, output} -> 
+    # Process successful output
+    
+  {:error, reason} ->
+    # Handle various error types:
+    # - Configuration errors: "Binary path not configured"
+    # - File not found: "Binary not found: /path/to/binary"
+    # - Execution errors: {:exit_code, 1, "Error message"}
+    # - Parse errors: {:parse_error, chunk, jason_error}
+end
+```
+
+## Development
+
+```bash
+# Get dependencies
+mix deps.get
+
+# Run tests
+mix test
+
+# Generate documentation
+mix docs
+
+# Check code formatting
+mix format --check-formatted
+```
+
+## Examples
+
+### Basic Usage
+
+```elixir
+# Configure once in your application
+Application.put_env(:corro_cli, :binary_path, "/usr/local/bin/corrosion")
+Application.put_env(:corro_cli, :config_path, "/etc/corrosion/config.toml")
+
+# Get and parse cluster members
+with {:ok, output} <- CorroCLI.cluster_members(),
+     {:ok, members} <- CorroCLI.Parser.parse_cluster_members(output) do
+  
+  # Find active members
+  active_members = Enum.filter(members, &CorroCLI.Parser.active_member?/1)
+  
+  # Get member summaries
+  summaries = Enum.map(active_members, &CorroCLI.Parser.summarize_member/1)
+  
+  IO.inspect(summaries)
+end
+```
+
+### Concurrent Operations
+
+```elixir
+# Run multiple commands concurrently
+tasks = [
+  CorroCLI.cluster_members_async(),
+  CorroCLI.cluster_info_async(),
+  CorroCLI.cluster_status_async()
+]
+
+results = Task.await_many(tasks, 10_000)
+
+Enum.each(results, fn
+  {:ok, output} -> IO.puts("Success: #{String.slice(output, 0, 100)}...")
+  {:error, reason} -> IO.puts("Error: #{inspect(reason)}")
+end)
+```
+
+### Custom Enhancement
+
+```elixir
+# Add custom fields to parsed objects
+enhancer = fn member ->
+  member
+  |> Map.put("parsed_at", DateTime.utc_now())
+  |> Map.put("health_score", calculate_health_score(member))
+end
+
+{:ok, output} = CorroCLI.cluster_members()
+{:ok, enhanced_members} = CorroCLI.Parser.parse_json_output(output, enhancer)
+```
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add tests for new functionality
+5. Ensure all tests pass
+6. Submit a pull request
+
+## License
+
+MIT License - see [LICENSE](LICENSE) file for details.
+
+## Links
+
+- [Corrosion Database](https://github.com/superfly/corrosion)
+- [uhlc Timestamp Library](https://github.com/Mubelotix/uhlc)
+- [Hex Package](https://hex.pm/packages/corro_cli) (when published)
